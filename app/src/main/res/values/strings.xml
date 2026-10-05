@@ -1,0 +1,44 @@
+<resources>
+    <string name="app_name">U盘/SD卡测速工具</string>
+
+    <!-- 主界面 -->
+    <string name="title_storage_devices">存储设备</string>
+    <string name="btn_refresh">刷新</string>
+    <string name="btn_select_usb">选择U盘/SD卡…</string>
+    <string name="btn_start_test">开始测速</string>
+    <string name="btn_stop_test">停止测试</string>
+    <string name="hint_no_device">未检测到存储设备\n请插入U盘或SD卡后点击刷新</string>
+
+    <!-- 测试设置 -->
+    <string name="label_test_size">测试数据大小</string>
+    <string name="size_small">4 MB（快速）</string>
+    <string name="size_medium">16 MB（标准）</string>
+    <string name="size_large">64 MB（精确）</string>
+    <string name="size_xlarge">256 MB（深度）</string>
+
+    <!-- 测试结果 -->
+    <string name="label_test_result">测试结果</string>
+    <string name="label_write_speed">写入速度</string>
+    <string name="label_read_speed">读取速度</string>
+    <string name="label_write_time">写入耗时</string>
+    <string name="label_read_time">读取耗时</string>
+    <string name="label_data_size">测试数据量</string>
+    <string name="label_device_info">设备信息</string>
+    <string name="label_total_space">总容量</string>
+    <string name="label_used_space">已用</string>
+    <string name="label_free_space">可用</string>
+    <string name="label_file_system">文件系统</string>
+    <string name="label_device_path">路径</string>
+
+    <!-- 状态 -->
+    <string name="status_idle">就绪</string>
+    <string name="status_testing">测试中…</string>
+    <string name="status_done">测试完成</string>
+    <string name="status_error">测试失败</string>
+
+    <!-- 提示 -->
+    <string name="msg_permission_needed">需要存储权限才能测试SD卡</string>
+    <string name="msg_select_device">请先选择一个存储设备</string>
+    <string name="msg_usb_via_saf">对于外接U盘，请通过系统文件选择器授权访问</string>
+    <string name="msg_cleaning">清理临时文件…</string>
+</resources>
