@@ -18,12 +18,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.diskspeedtest.databinding.ActivityMainBinding
+import com.diskspeedtest.model.AuthenticityResult
 import com.diskspeedtest.model.CapacityTestResult
+import com.diskspeedtest.model.DataVerificationResult
 import com.diskspeedtest.model.StorageInfo
 import com.diskspeedtest.model.TestResult
+import com.diskspeedtest.model.VendorInfo
 import com.diskspeedtest.ui.DeviceAdapter
 import com.diskspeedtest.util.SpeedTestManager
 import com.diskspeedtest.util.StorageHelper
+import com.diskspeedtest.util.VendorDetector
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -48,6 +52,15 @@ class MainActivity : AppCompatActivity() {
 
     /** 当前正在运行的测试任务 */
     private var testJob: Job? = null
+
+    /** 上一次速度测试的写入速度 (MB/s)，用于真伪验证 */
+    private var lastWriteSpeed: Double? = null
+
+    /** 上一次速度测试的读取速度 (MB/s)，用于真伪验证 */
+    private var lastReadSpeed: Double? = null
+
+    /** 上一次容量检测的真实容量（字节），用于真伪验证 */
+    private var lastRealCapacity: Long? = null
 
     /** SAF 目录选择器 */
     private val openDocumentTree = registerForActivityResult(
@@ -106,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnSelectUsb.setOnClickListener { openDocumentTree.launch(null) }
         binding.btnStartTest.setOnClickListener { startTest() }
         binding.btnCheckCapacity.setOnClickListener { startCapacityCheck() }
+        binding.btnVerifyAuthenticity.setOnClickListener { startAuthenticityCheck() }
         binding.btnStopTest.setOnClickListener { stopTest() }
 
         // 测试数据大小选择（Spinner）
@@ -243,6 +257,22 @@ class MainActivity : AppCompatActivity() {
         binding.tvFileSystem.text = device.fileSystem.uppercase()
         binding.tvDevicePath.text = device.path
         binding.pbUsage.progress = device.usedPercent
+
+        // 厂商信息在后台线程获取（读取 sysfs）
+        lifecycleScope.launch {
+            val vendorInfo = VendorDetector.detectVendor(this@MainActivity, device)
+            runOnUiThread {
+                binding.tvVendor.text = vendorInfo.vendor
+                binding.tvModel.text = vendorInfo.model
+                binding.tvSerial.text = vendorInfo.serial
+                binding.tvDeviceType.text = when (vendorInfo.deviceType) {
+                    "sd" -> "SD 卡"
+                    "usb" -> "U盘"
+                    "internal" -> "内部存储"
+                    else -> vendorInfo.deviceType
+                }
+            }
+        }
     }
 
     /** 获取用户选择的测试数据大小 */
@@ -454,6 +484,7 @@ class MainActivity : AppCompatActivity() {
         binding.capacityResultCard.visibility = View.VISIBLE
 
         if (result.success) {
+            lastRealCapacity = result.realCapacity
             binding.tvAdvertisedCapacity.text = result.readableAdvertised
             binding.tvRealCapacity.text = result.readableReal
             binding.tvShrinkPercent.text = "${result.shrinkPercent}%"
@@ -465,6 +496,7 @@ class MainActivity : AppCompatActivity() {
                 else getColor(R.color.success)
             )
         } else {
+            lastRealCapacity = null
             binding.tvAdvertisedCapacity.text = result.readableAdvertised
             binding.tvRealCapacity.text = "—"
             binding.tvShrinkPercent.text = "—"
@@ -474,12 +506,198 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 开始真伪检测（厂商识别 + 数据完整性哈希验证 + 综合评分） */
+    private fun startAuthenticityCheck() {
+        val device = selectedDevice
+        val uri = selectedTreeUri
+
+        if (device == null && uri == null) {
+            Toast.makeText(this, R.string.msg_select_device, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val testSize = getSelectedTestSize()
+        val deviceToTest = selectedDevice
+        val uriToTest = selectedTreeUri
+
+        Toast.makeText(this, R.string.msg_verify_warning, Toast.LENGTH_LONG).show()
+
+        binding.dataVerifyResultCard.visibility = View.GONE
+        binding.authenticityResultCard.visibility = View.GONE
+        binding.resultCard.visibility = View.GONE
+        binding.capacityResultCard.visibility = View.GONE
+        binding.progressCard.visibility = View.VISIBLE
+        binding.btnStartTest.isEnabled = false
+        binding.btnCheckCapacity.isEnabled = false
+        binding.btnVerifyAuthenticity.isEnabled = false
+        binding.btnStopTest.visibility = View.VISIBLE
+        binding.progressBar.progress = 0
+        binding.tvProgressText.text = "正在检测真伪..."
+
+        testJob = lifecycleScope.launch {
+            try {
+                // 1. 厂商信息检测
+                var vendorInfo: VendorInfo? = null
+                if (deviceToTest != null) {
+                    vendorInfo = VendorDetector.detectVendor(this@MainActivity, deviceToTest)
+                }
+
+                // 2. 数据完整性验证（哈希比较，参考 SD Card Test Pro 方法）
+                val dataResult: DataVerificationResult = if (uriToTest != null) {
+                    SpeedTestManager.verifyDataByUri(
+                        context = this@MainActivity,
+                        treeUri = uriToTest,
+                        testSize = testSize,
+                        callback = { percent, message ->
+                            runOnUiThread {
+                                binding.progressBar.progress = percent
+                                binding.tvProgressText.text = message
+                            }
+                        }
+                    )
+                } else if (deviceToTest != null) {
+                    val privateDir = StorageHelper.getAppPrivateDir(this@MainActivity, deviceToTest.path)
+                    val testPath = privateDir ?: deviceToTest.path
+                    SpeedTestManager.verifyDataByPath(
+                        context = this@MainActivity,
+                        dirPath = testPath,
+                        testSize = testSize,
+                        callback = { percent, message ->
+                            runOnUiThread {
+                                binding.progressBar.progress = percent
+                                binding.tvProgressText.text = message
+                            }
+                        }
+                    )
+                } else {
+                    DataVerificationResult(
+                        isVerified = false, testDataSize = 0, writeHash = "", readHash = "",
+                        writeSpeedMBps = 0.0, readSpeedMBps = 0.0, elapsedMs = 0,
+                        success = false, errorMessage = "未选择设备"
+                    )
+                }
+
+                runOnUiThread { showDataVerificationResult(dataResult) }
+
+                // 3. 综合真伪评分
+                val authenticityResult: AuthenticityResult? = if (deviceToTest != null && vendorInfo != null) {
+                    VendorDetector.verifyAuthenticity(
+                        device = deviceToTest,
+                        vendorInfo = vendorInfo,
+                        realCapacity = lastRealCapacity,
+                        writeSpeedMBps = lastWriteSpeed ?: dataResult.writeSpeedMBps,
+                        readSpeedMBps = lastReadSpeed ?: dataResult.readSpeedMBps
+                    )
+                } else null
+
+                runOnUiThread {
+                    if (authenticityResult != null) {
+                        showAuthenticityResult(authenticityResult)
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showDataVerificationResult(
+                        DataVerificationResult(
+                            isVerified = false, testDataSize = 0, writeHash = "", readHash = "",
+                            writeSpeedMBps = 0.0, readSpeedMBps = 0.0, elapsedMs = 0,
+                            success = false, errorMessage = "检测异常: ${e.message}"
+                        )
+                    )
+                }
+            } finally {
+                runOnUiThread {
+                    binding.btnStartTest.isEnabled = true
+                    binding.btnCheckCapacity.isEnabled = true
+                    binding.btnVerifyAuthenticity.isEnabled = true
+                    binding.btnStopTest.visibility = View.GONE
+                    binding.tvProgressText.text = getString(R.string.status_idle)
+                }
+                testJob = null
+            }
+        }
+    }
+
+    /** 显示数据完整性验证结果（哈希比较） */
+    private fun showDataVerificationResult(result: DataVerificationResult) {
+        binding.progressCard.visibility = View.GONE
+        binding.dataVerifyResultCard.visibility = View.VISIBLE
+
+        binding.tvVerifyDataSize.text = result.readableDataSize
+        binding.tvWriteHash.text = result.writeHash.ifEmpty { "—" }
+        binding.tvReadHash.text = result.readHash.ifEmpty { "—" }
+        binding.tvVerifyWriteSpeed.text = String.format("%.1f MB/s", result.writeSpeedMBps)
+        binding.tvVerifyReadSpeed.text = String.format("%.1f MB/s", result.readSpeedMBps)
+
+        if (result.success) {
+            if (result.isVerified) {
+                binding.tvVerifyStatus.text = getString(R.string.verify_passed)
+                binding.tvVerifyStatus.setTextColor(getColor(R.color.success))
+                binding.tvVerifyConclusion.setTextColor(getColor(R.color.success))
+            } else {
+                binding.tvVerifyStatus.text = getString(R.string.verify_failed)
+                binding.tvVerifyStatus.setTextColor(getColor(R.color.error))
+                binding.tvVerifyConclusion.setTextColor(getColor(R.color.error))
+            }
+            binding.tvVerifyConclusion.text = result.conclusion
+        } else {
+            binding.tvVerifyStatus.text = getString(R.string.verify_failed)
+            binding.tvVerifyStatus.setTextColor(getColor(R.color.error))
+            binding.tvVerifyConclusion.setTextColor(getColor(R.color.error))
+            binding.tvVerifyConclusion.text = result.conclusion
+            Toast.makeText(this, result.errorMessage, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 显示真伪验证综合结果 */
+    private fun showAuthenticityResult(result: AuthenticityResult) {
+        binding.authenticityResultCard.visibility = View.VISIBLE
+
+        binding.tvAuthScore.text = result.score.toString()
+        binding.tvAuthConclusion.text = result.conclusion
+        binding.tvAuthSuggestion.text = result.suggestion
+
+        val scoreColor = when {
+            result.score >= 75 -> getColor(R.color.success)
+            result.score >= 60 -> getColor(R.color.warning)
+            else -> getColor(R.color.error)
+        }
+        binding.tvAuthScore.setTextColor(scoreColor)
+        binding.tvAuthConclusion.setTextColor(scoreColor)
+
+        // 动态生成检测项列表
+        val container = binding.authChecksContainer
+        container.removeAllViews()
+        for (check in result.checks) {
+            val row = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(0, 8, 0, 8)
+            }
+            val title = android.widget.TextView(this).apply {
+                text = "${if (check.passed) "✓" else "✗"} ${check.name}"
+                setTextColor(if (check.passed) getColor(R.color.success) else getColor(R.color.error))
+                textSize = 13f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            }
+            val detail = android.widget.TextView(this).apply {
+                text = check.detail
+                setTextColor(getColor(R.color.text_secondary))
+                textSize = 12f
+                setPadding(0, 2, 0, 0)
+            }
+            row.addView(title)
+            row.addView(detail)
+            container.addView(row)
+        }
+    }
+
     /** 停止测试 */
     private fun stopTest() {
         testJob?.cancel()
         testJob = null
         binding.btnStartTest.isEnabled = true
         binding.btnCheckCapacity.isEnabled = true
+        binding.btnVerifyAuthenticity.isEnabled = true
         binding.btnStopTest.visibility = View.GONE
         binding.tvProgressText.text = getString(R.string.status_idle)
         binding.progressBar.progress = 0
@@ -492,6 +710,8 @@ class MainActivity : AppCompatActivity() {
         binding.resultCard.visibility = View.VISIBLE
 
         if (result.success) {
+            lastWriteSpeed = result.writeSpeedMBps
+            lastReadSpeed = result.readSpeedMBps
             binding.tvWriteSpeed.text = result.readableWriteSpeed
             binding.tvReadSpeed.text = result.readableReadSpeed
             binding.tvWriteRating.text = SpeedTestManager.getSpeedRating(result.writeSpeedMBps)
@@ -500,6 +720,8 @@ class MainActivity : AppCompatActivity() {
             binding.tvReadTime.text = "${result.readTimeMs} ms"
             binding.tvDataSize.text = result.readableDataSize
         } else {
+            lastWriteSpeed = null
+            lastReadSpeed = null
             binding.tvWriteSpeed.text = "—"
             binding.tvReadSpeed.text = "—"
             binding.tvWriteRating.text = result.errorMessage

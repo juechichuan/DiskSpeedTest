@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import com.diskspeedtest.model.CapacityTestResult
+import com.diskspeedtest.model.DataVerificationResult
 import com.diskspeedtest.model.StorageInfo
 import com.diskspeedtest.model.TestResult
 import kotlinx.coroutines.Dispatchers
@@ -493,5 +494,228 @@ object SpeedTestManager {
             System.arraycopy(signature, 0, buffer, pos, copyLen)
             pos += copyLen
         }
+    }
+
+    // ====================== 数据完整性验证（哈希比较） ======================
+
+    /**
+     * 数据完整性验证测试（参考 SD Card Test Pro 的数据验证技术）
+     *
+     * 原理：
+     * 1. 生成随机数据写入磁盘，同时计算 MD5 哈希并保存
+     * 2. 读取数据时重新计算 MD5 哈希
+     * 3. 比较两个哈希：相同→数据完整；不同→卡片损坏或为假冒扩容卡
+     *
+     * @param context 上下文
+     * @param dirPath 测试目录路径
+     * @param testSize 测试数据大小
+     * @param callback 进度回调
+     */
+    suspend fun verifyDataByPath(
+        context: Context,
+        dirPath: String,
+        testSize: TestSize = TestSize.LARGE,
+        callback: ProgressCallback? = null
+    ): DataVerificationResult = withContext(Dispatchers.IO) {
+        val tempFile = File(dirPath, ".data_verify_${System.currentTimeMillis()}.tmp")
+        try {
+            runDataVerification(
+                tempFile = tempFile,
+                useUri = false,
+                context = context,
+                uri = null,
+                testSize = testSize,
+                callback = callback
+            )
+        } finally {
+            try {
+                if (tempFile.exists()) tempFile.delete()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * 通过 SAF Uri 进行数据完整性验证
+     */
+    suspend fun verifyDataByUri(
+        context: Context,
+        treeUri: Uri,
+        testSize: TestSize = TestSize.LARGE,
+        callback: ProgressCallback? = null
+    ): DataVerificationResult = withContext(Dispatchers.IO) {
+        val docUri = createDocumentUri(context, treeUri, "data_verify_${System.currentTimeMillis()}.tmp")
+        try {
+            runDataVerification(
+                tempFile = null,
+                useUri = true,
+                context = context,
+                uri = docUri,
+                testSize = testSize,
+                callback = callback
+            )
+        } finally {
+            try {
+                if (docUri != null) {
+                    DocumentsContract.deleteDocument(context.contentResolver, docUri)
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * 执行数据完整性验证
+     */
+    private suspend fun runDataVerification(
+        tempFile: File?,
+        useUri: Boolean,
+        context: Context,
+        uri: Uri?,
+        testSize: TestSize,
+        callback: ProgressCallback?
+    ): DataVerificationResult {
+        val totalBytes = testSize.bytes
+        val md5 = MessageDigest.getInstance("MD5")
+        val random = java.util.Random()
+        val buffer = ByteArray(BUFFER_SIZE)
+
+        var writeSpeed = 0.0
+        var readSpeed = 0.0
+        val startTime = System.currentTimeMillis()
+
+        // ========== 第一阶段：写入随机数据并计算哈希 ==========
+        callback?.onProgress(1, "生成随机数据并写入（同时计算哈希）...")
+
+        try {
+            val outputStream: OutputStream = if (useUri && uri != null) {
+                context.contentResolver.openOutputStream(uri, "wt")
+                    ?: throw Exception("无法打开输出流")
+            } else {
+                FileOutputStream(tempFile)
+            }
+
+            outputStream.use { out ->
+                val buffered = out.buffered(BUFFER_SIZE)
+                val writeStart = System.nanoTime()
+                md5.reset()
+
+                var written = 0L
+                while (written < totalBytes) {
+                    coroutineContext.ensureActive()
+                    val toWrite = minOf(buffer.size.toLong(), totalBytes - written).toInt()
+                    random.nextBytes(buffer)
+                    // 更新哈希（只对实际写入的字节）
+                    md5.update(buffer, 0, toWrite)
+                    buffered.write(buffer, 0, toWrite)
+                    written += toWrite
+
+                    if (written % (BUFFER_SIZE * 16) == 0L) {
+                        val percent = 2 + ((written * 48) / totalBytes).toInt().coerceAtMost(50)
+                        callback?.onProgress(
+                            percent,
+                            "写入+哈希中... ${StorageInfo.formatSize(written)} / ${testSize.label}"
+                        )
+                    }
+                }
+                buffered.flush()
+                out.flush()
+
+                val writeTimeMs = (System.nanoTime() - writeStart) / 1_000_000
+                writeSpeed = if (writeTimeMs > 0) {
+                    (totalBytes.toDouble() / (1024.0 * 1024.0)) / (writeTimeMs / 1000.0)
+                } else 0.0
+            }
+        } catch (e: Exception) {
+            return DataVerificationResult(
+                isVerified = false,
+                testDataSize = totalBytes,
+                writeHash = "",
+                readHash = "",
+                writeSpeedMBps = 0.0,
+                readSpeedMBps = 0.0,
+                elapsedMs = System.currentTimeMillis() - startTime,
+                success = false,
+                errorMessage = "写入失败: ${e.message}"
+            )
+        }
+
+        val writeHash = bytesToHex(md5.digest())
+        callback?.onProgress(50, "写入完成，开始读取验证...")
+
+        // ========== 第二阶段：读取数据并计算哈希 ==========
+        md5.reset()
+        try {
+            val inputStream: InputStream = if (useUri && uri != null) {
+                context.contentResolver.openInputStream(uri)
+                    ?: throw Exception("无法打开输入流")
+            } else {
+                FileInputStream(tempFile)
+            }
+
+            inputStream.use { input ->
+                val buffered = input.buffered(BUFFER_SIZE)
+                val readStart = System.nanoTime()
+
+                var read = 0L
+                while (true) {
+                    coroutineContext.ensureActive()
+                    val n = buffered.read(buffer)
+                    if (n <= 0) break
+                    md5.update(buffer, 0, n)
+                    read += n
+
+                    if (read % (BUFFER_SIZE * 16) == 0L) {
+                        val percent = 52 + ((read * 46) / totalBytes).toInt().coerceAtMost(98)
+                        callback?.onProgress(
+                            percent,
+                            "读取+哈希中... ${StorageInfo.formatSize(read)} / ${testSize.label}"
+                        )
+                    }
+                }
+
+                val readTimeMs = (System.nanoTime() - readStart) / 1_000_000
+                readSpeed = if (readTimeMs > 0) {
+                    (totalBytes.toDouble() / (1024.0 * 1024.0)) / (readTimeMs / 1000.0)
+                } else 0.0
+            }
+        } catch (e: Exception) {
+            return DataVerificationResult(
+                isVerified = false,
+                testDataSize = totalBytes,
+                writeHash = writeHash,
+                readHash = "",
+                writeSpeedMBps = writeSpeed,
+                readSpeedMBps = 0.0,
+                elapsedMs = System.currentTimeMillis() - startTime,
+                success = false,
+                errorMessage = "读取失败: ${e.message}"
+            )
+        }
+
+        val readHash = bytesToHex(md5.digest())
+        val isVerified = writeHash == readHash
+
+        callback?.onProgress(100, if (isVerified) "验证通过：数据完整" else "验证失败：哈希不一致")
+
+        return DataVerificationResult(
+            isVerified = isVerified,
+            testDataSize = totalBytes,
+            writeHash = writeHash,
+            readHash = readHash,
+            writeSpeedMBps = writeSpeed,
+            readSpeedMBps = readSpeed,
+            elapsedMs = System.currentTimeMillis() - startTime,
+            success = true
+        )
+    }
+
+    /** 字节数组转十六进制字符串 */
+    private fun bytesToHex(bytes: ByteArray): String {
+        val sb = StringBuilder()
+        for (b in bytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
     }
 }

@@ -27,6 +27,31 @@
     <string name="label_capacity_conclusion">检测结论</string>
     <string name="msg_capacity_warning">容量检测会写入大量数据并删除，请勿中途拔出U盘，建议在U盘上执行</string>
 
+    <!-- 厂商信息与真伪验证 -->
+    <string name="label_vendor">厂　商</string>
+    <string name="label_model">型　号</string>
+    <string name="label_serial">序列号</string>
+    <string name="label_revision">固件版本</string>
+    <string name="label_device_type">设备类型</string>
+    <string name="label_speed_class">速度等级</string>
+    <string name="label_info_source">信息来源</string>
+    <string name="btn_verify_authenticity">检测真伪</string>
+    <string name="label_authenticity_result">真伪验证</string>
+    <string name="label_score">综合评分</string>
+    <string name="label_conclusion">总体结论</string>
+    <string name="label_suggestion">建议</string>
+    <string name="msg_run_tests_first">请先执行速度测试和容量检测，以获得更准确的真伪判断</string>
+
+    <!-- 数据完整性验证（哈希比较） -->
+    <string name="label_data_verify_result">数据完整性验证</string>
+    <string name="label_write_hash">写入哈希 (MD5)</string>
+    <string name="label_read_hash">读取哈希 (MD5)</string>
+    <string name="label_verify_status">验证状态</string>
+    <string name="label_verify_conclusion">验证结论</string>
+    <string name="msg_verify_warning">数据验证将写入并读取随机数据，通过哈希比对检测损坏或假冒扩容卡</string>
+    <string name="verify_passed">✓ 通过</string>
+    <string name="verify_failed">✗ 失败</string>
+
     <!-- 测试结果 -->
     <string name="label_test_result">测试结果</string>
     <string name="label_write_speed">写入速度</string>
