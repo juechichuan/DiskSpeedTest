@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="test_size_options">
+        <item>4 MB（快速）</item>
+        <item>16 MB（标准）</item>
+        <item>64 MB（精确）</item>
+        <item>256 MB（深度）</item>
+        <item>512 MB（深度）</item>
+        <item>1 GB（极限）</item>
+    </string-array>
+</resources>

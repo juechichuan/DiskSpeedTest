@@ -11,8 +11,8 @@ android {
         applicationId = "com.diskspeedtest"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -34,12 +34,14 @@ android {
                 ?: keystorePassword
 
             // 使用 rootProject.file 以项目根目录为基准解析路径
-            val keystoreFile = rootProject.file(keystorePath)
-            if (keystorePath.isNotEmpty() && keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = keystorePassword
-                this.keyAlias = keyAlias
-                this.keyPassword = keyPassword
+            if (keystorePath.isNotEmpty()) {
+                val keystoreFile = rootProject.file(keystorePath)
+                if (keystoreFile.exists()) {
+                    storeFile = keystoreFile
+                    storePassword = keystorePassword
+                    this.keyAlias = keyAlias
+                    this.keyPassword = keyPassword
+                }
             }
         }
     }

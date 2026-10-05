@@ -10,7 +10,7 @@ import android.provider.DocumentsContract
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.widget.RadioButton
+import android.widget.AdapterView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.diskspeedtest.databinding.ActivityMainBinding
+import com.diskspeedtest.model.CapacityTestResult
 import com.diskspeedtest.model.StorageInfo
 import com.diskspeedtest.model.TestResult
 import com.diskspeedtest.ui.DeviceAdapter
@@ -104,11 +105,15 @@ class MainActivity : AppCompatActivity() {
         binding.btnRefresh.setOnClickListener { refreshDevices() }
         binding.btnSelectUsb.setOnClickListener { openDocumentTree.launch(null) }
         binding.btnStartTest.setOnClickListener { startTest() }
+        binding.btnCheckCapacity.setOnClickListener { startCapacityCheck() }
         binding.btnStopTest.setOnClickListener { stopTest() }
 
-        // 测试数据大小选择
-        binding.rgTestSize.setOnCheckedChangeListener { _, _ ->
-            // 无需额外处理，开始测试时读取
+        // 测试数据大小选择（Spinner）
+        binding.spinnerTestSize.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // 无需额外处理，开始测试时读取
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
     }
 
@@ -242,11 +247,13 @@ class MainActivity : AppCompatActivity() {
 
     /** 获取用户选择的测试数据大小 */
     private fun getSelectedTestSize(): SpeedTestManager.TestSize {
-        val checkedId = binding.rgTestSize.checkedRadioButtonId
-        return when (checkedId) {
-            R.id.rbSmall -> SpeedTestManager.TestSize.SMALL
-            R.id.rbLarge -> SpeedTestManager.TestSize.LARGE
-            R.id.rbXlarge -> SpeedTestManager.TestSize.XLARGE
+        return when (binding.spinnerTestSize.selectedItemPosition) {
+            0 -> SpeedTestManager.TestSize.SMALL
+            1 -> SpeedTestManager.TestSize.MEDIUM
+            2 -> SpeedTestManager.TestSize.LARGE
+            3 -> SpeedTestManager.TestSize.XLARGE
+            4 -> SpeedTestManager.TestSize.XXLARGE
+            5 -> SpeedTestManager.TestSize.HUGE
             else -> SpeedTestManager.TestSize.MEDIUM
         }
     }
@@ -348,11 +355,131 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 开始真实容量检测 */
+    private fun startCapacityCheck() {
+        val device = selectedDevice
+        val uri = selectedTreeUri
+
+        if (device == null && uri == null) {
+            Toast.makeText(this, R.string.msg_select_device, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // 标称容量
+        val advertisedCapacity = device?.totalSpace ?: 0L
+        if (advertisedCapacity <= 0) {
+            Toast.makeText(this, "无法获取设备标称容量", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // 提示用户
+        Toast.makeText(this, R.string.msg_capacity_warning, Toast.LENGTH_LONG).show()
+
+        val deviceToTest = selectedDevice
+        val uriToTest = selectedTreeUri
+
+        binding.capacityResultCard.visibility = View.GONE
+        binding.resultCard.visibility = View.GONE
+        binding.progressCard.visibility = View.VISIBLE
+        binding.btnStartTest.isEnabled = false
+        binding.btnCheckCapacity.isEnabled = false
+        binding.btnStopTest.visibility = View.VISIBLE
+        binding.progressBar.progress = 0
+        binding.tvProgressText.text = "正在检测真实容量..."
+
+        testJob = lifecycleScope.launch {
+            try {
+                val result: CapacityTestResult = if (uriToTest != null) {
+                    SpeedTestManager.checkRealCapacityByUri(
+                        context = this@MainActivity,
+                        treeUri = uriToTest,
+                        advertisedCapacity = advertisedCapacity,
+                        callback = { percent, message ->
+                            runOnUiThread {
+                                binding.progressBar.progress = percent
+                                binding.tvProgressText.text = message
+                            }
+                        }
+                    )
+                } else if (deviceToTest != null) {
+                    val privateDir = StorageHelper.getAppPrivateDir(this@MainActivity, deviceToTest.path)
+                    val testPath = privateDir ?: deviceToTest.path
+                    SpeedTestManager.checkRealCapacityByPath(
+                        context = this@MainActivity,
+                        dirPath = testPath,
+                        advertisedCapacity = advertisedCapacity,
+                        callback = { percent, message ->
+                            runOnUiThread {
+                                binding.progressBar.progress = percent
+                                binding.tvProgressText.text = message
+                            }
+                        }
+                    )
+                } else {
+                    CapacityTestResult(0, 0, 0, false, 0, false, "未选择设备")
+                }
+
+                runOnUiThread {
+                    showCapacityResult(result)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showCapacityResult(
+                        CapacityTestResult(
+                            advertisedCapacity = advertisedCapacity,
+                            realCapacity = 0,
+                            realFreeSpace = 0,
+                            isFakeCapacity = false,
+                            shrinkPercent = 0,
+                            success = false,
+                            errorMessage = "检测异常: ${e.message}"
+                        )
+                    )
+                }
+            } finally {
+                runOnUiThread {
+                    binding.btnStartTest.isEnabled = true
+                    binding.btnCheckCapacity.isEnabled = true
+                    binding.btnStopTest.visibility = View.GONE
+                    binding.tvProgressText.text = getString(R.string.status_idle)
+                }
+                testJob = null
+            }
+        }
+    }
+
+    /** 显示容量检测结果 */
+    private fun showCapacityResult(result: CapacityTestResult) {
+        binding.progressCard.visibility = View.GONE
+        binding.capacityResultCard.visibility = View.VISIBLE
+
+        if (result.success) {
+            binding.tvAdvertisedCapacity.text = result.readableAdvertised
+            binding.tvRealCapacity.text = result.readableReal
+            binding.tvShrinkPercent.text = "${result.shrinkPercent}%"
+            binding.tvCapacityConclusion.text = result.conclusion
+            // 根据结论设置颜色
+            binding.tvCapacityConclusion.setTextColor(
+                if (result.isFakeCapacity) getColor(R.color.error)
+                else if (result.shrinkPercent > 5) getColor(R.color.warning)
+                else getColor(R.color.success)
+            )
+        } else {
+            binding.tvAdvertisedCapacity.text = result.readableAdvertised
+            binding.tvRealCapacity.text = "—"
+            binding.tvShrinkPercent.text = "—"
+            binding.tvCapacityConclusion.text = result.errorMessage
+            binding.tvCapacityConclusion.setTextColor(getColor(R.color.error))
+            Toast.makeText(this, result.errorMessage, Toast.LENGTH_LONG).show()
+        }
+    }
+
     /** 停止测试 */
     private fun stopTest() {
         testJob?.cancel()
         testJob = null
         binding.btnStartTest.isEnabled = true
+        binding.btnCheckCapacity.isEnabled = true
         binding.btnStopTest.visibility = View.GONE
         binding.tvProgressText.text = getString(R.string.status_idle)
         binding.progressBar.progress = 0

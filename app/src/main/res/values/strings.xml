@@ -10,11 +10,22 @@
     <string name="hint_no_device">未检测到存储设备\n请插入U盘或SD卡后点击刷新</string>
 
     <!-- 测试设置 -->
-    <string name="label_test_size">测试数据大小</string>
-    <string name="size_small">4 MB（快速）</string>
-    <string name="size_medium">16 MB（标准）</string>
-    <string name="size_large">64 MB（精确）</string>
-    <string name="size_xlarge">256 MB（深度）</string>
+    <string name="label_test_size">测速数据大小</string>
+    <string name="size_small">4 MB</string>
+    <string name="size_medium">16 MB</string>
+    <string name="size_large">64 MB</string>
+    <string name="size_xlarge">256 MB</string>
+    <string name="size_xxlarge">512 MB</string>
+    <string name="size_huge">1 GB</string>
+
+    <!-- 真实容量检测 -->
+    <string name="btn_check_capacity">检测真实容量</string>
+    <string name="label_capacity_result">真实容量检测</string>
+    <string name="label_advertised_capacity">标称容量</string>
+    <string name="label_real_capacity">真实容量</string>
+    <string name="label_shrink_percent">缩水比例</string>
+    <string name="label_capacity_conclusion">检测结论</string>
+    <string name="msg_capacity_warning">容量检测会写入大量数据并删除，请勿中途拔出U盘，建议在U盘上执行</string>
 
     <!-- 测试结果 -->
     <string name="label_test_result">测试结果</string>
